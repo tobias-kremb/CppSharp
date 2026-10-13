@@ -13,7 +13,8 @@ namespace CppSharp.Passes
     {
         public GenerateSymbolsPass() => VisitOptions.ResetFlags(
             VisitFlags.ClassMethods | VisitFlags.ClassProperties |
-            VisitFlags.ClassTemplateSpecializations | VisitFlags.NamespaceVariables);
+            VisitFlags.ClassTemplateSpecializations | VisitFlags.NamespaceVariables |
+            VisitFlags.NamespaceEvents);
 
         public override bool VisitASTContext(ASTContext context)
         {
@@ -195,6 +196,15 @@ namespace CppSharp.Passes
 
             Module module = variable.TranslationUnit.Module;
             return variable.Visit(GetSymbolsCodeGenerator(module));
+        }
+
+        public override bool VisitEvent(Event @event)
+        {
+            if (!base.VisitEvent(@event) || !@event.IsGenerated ||
+                !(@event.Namespace is Class @class) || !@class.IsGenerated)
+                return false;
+            Module module = @class.TranslationUnit.Module;
+            return @event.Visit(GetSymbolsCodeGenerator(module));
         }
 
         public class SymbolsCodeEventArgs : EventArgs

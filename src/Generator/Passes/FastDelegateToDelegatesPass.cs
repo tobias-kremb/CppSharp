@@ -48,6 +48,7 @@ namespace CppSharp
                 Name = field.Name,
                 Namespace = @class,
                 QualifiedType = new QualifiedType(functionType),
+                OriginalDeclaration = field,
                 GenerationKind = GenerationKind.Generate
             };
 

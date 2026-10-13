@@ -108,6 +108,39 @@ namespace CppSharp.Passes
             return true;
         }
 
+        public override bool VisitEvent(Event @event)
+        {
+	        var @class = (Class)@event.Namespace;
+	        string className = @class.Visit(cppTypePrinter);
+	        string connectName = @event.GetNameForConnect();
+
+	        var functionType = (FunctionType)@event.Type;
+	        string retType = functionType.ReturnType.Visit(cppTypePrinter).Type;
+	        var parameterTypes = new List<string>();
+	        foreach (var param in functionType.Parameters)
+		        parameterTypes.Add(cppTypePrinter.VisitParameter(param));
+	        string parameters = string.Join(", ", parameterTypes);
+	        string delegateType = $"fastdelegate::FastDelegate<{retType}({parameters})>";
+
+	        Write($"extern \"C\" {{ typedef {retType} (*{connectName}CallbackPtr)(");
+	        Write(parameters);
+	        WriteLine(");");
+
+	        Write($"{GetExporting()}{retType} {connectName}_Connect(void* {Helpers.InstanceField}, {connectName}CallbackPtr callback)");
+	        WriteOpenBraceAndIndent();
+	        Write($"(({className}*){Helpers.InstanceField})->{@event.OriginalName} = {delegateType}(callback);");
+	        UnindentAndWriteCloseBrace();
+
+	        Write($"{GetExporting()}{retType} {connectName}_Disconnect(void* {Helpers.InstanceField})");
+	        WriteOpenBraceAndIndent();
+	        Write($"(({className}*){Helpers.InstanceField})->{@event.OriginalName}.clear();");
+	        UnindentAndWriteCloseBrace();
+
+	        WriteLine("}");
+	        NewLine();
+	        return true;
+        }
+
         private string GetExporting()
         {
             return Context.ParserOptions.IsMicrosoftAbi ||

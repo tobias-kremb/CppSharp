@@ -8,7 +8,7 @@ FEED_DIR="/d/Projekte/modules/NuGetLocal"
 CONFIGURATION="Release"
 PLATFORM="x64"
 TFM="net10.0"
-VER="1.0.3"
+VER="1.0.7"
 # ========================
 
 MSBUILD=$(ls "/c/Program Files/Microsoft Visual Studio/2022/"*/MSBuild/Current/Bin/MSBuild.exe 2>/dev/null | head -1 || true)
@@ -36,7 +36,7 @@ echo "=== 2/5 Bauen (MIT ref-Assemblies) ==="
 echo "=== 3/5 prepack ==="
 rm -rf "$CPPSHARP_DIR/artifacts/package"          # Staging sauber (keine Stale-Copies)
 "$MSBUILD" "$CPPSHARP_DIR/CppSharp.sln" -t:prepack \
-    -p:Configuration=$CONFIGURATION -p:Platform=$PLATFORM -v:minimal -nologo
+    -p:Configuration=$CONFIGURATION -p:Platform=$PLATFORM -p:ProduceReferenceAssembly=true -v:minimal -nologo
 
 echo "--- CLI + native Parser-Familie ins Paket-Staging legen ---"
 # Der Build-Output-Ordner der CLI-DLL enthaelt die GESAMTE native Familie:
@@ -85,6 +85,7 @@ cp -v "$CPPSHARP_DIR/artifacts/CppSharp.$VERSION.nupkg" "$FEED_DIR/"
 cp -v "$CPPSHARP_DIR/artifacts/CppSharp.Runtime.$VERSION.nupkg" "$FEED_DIR/"
 
 CPPS_NUPKG="$FEED_DIR/CppSharp.$VERSION.nupkg"
+RUNTIME_NUPKG="$FEED_DIR/CppSharp.Runtime.$VERSION.nupkg"
 if [ ! -f "$CPPS_NUPKG" ]; then
     echo "FEHLER: $CPPS_NUPKG nicht erzeugt."
     exit 1
@@ -94,19 +95,25 @@ echo ""
 echo "=== Strukturpruefung ==="
 FAIL=0
 
-# 1) Compile-Referenzen
-if unzip -l "$CPPS_NUPKG" | grep -q "ref/$TFM/CppSharp.Parser.CLI.dll"; then
-    echo "OK: ref/$TFM/CppSharp.Parser.CLI.dll (Compile-Referenz)"
-else
-    echo "FEHLER: CLI-DLL fehlt unter ref/$TFM/"; FAIL=1
-fi
+# 1) Compile-Referenzen: alle managed DLLs muessen unter ref/ liegen
+for dll in CppSharp.dll CppSharp.AST.dll CppSharp.Generator.dll \
+           CppSharp.Parser.CLI.dll CppSharp.Runtime.dll; do
+    if unzip -l "$CPPS_NUPKG" | grep -q "ref/$TFM/$dll"; then
+        echo "OK: ref/$TFM/$dll"
+    else
+        echo "FEHLER: ref/$TFM/$dll fehlt"; FAIL=1
+    fi
+done
 
-# 2) CLI im lib/-Zweig
-if unzip -l "$CPPS_NUPKG" | grep -q "runtimes/win-x64/lib/$TFM/CppSharp.Parser.CLI.dll"; then
-    echo "OK: CLI-DLL im Laufzeit-lib/-Zweig"
-else
-    echo "FEHLER: CLI-DLL fehlt unter runtimes/win-x64/lib/$TFM/"; FAIL=1
-fi
+# 2) Laufzeit-Assets: alle managed DLLs muessen im lib/-Zweig liegen
+for dll in CppSharp.dll CppSharp.AST.dll CppSharp.Generator.dll \
+           CppSharp.Parser.CLI.dll CppSharp.Runtime.dll; do
+    if unzip -l "$CPPS_NUPKG" | grep -q "runtimes/win-x64/lib/$TFM/$dll"; then
+        echo "OK: runtimes/win-x64/lib/$TFM/$dll"
+    else
+        echo "FEHLER: runtimes/win-x64/lib/$TFM/$dll fehlt"; FAIL=1
+    fi
+done
 
 # 3) native Familie im lib/-Zweig (ENTSCHEIDEND fuer den Loader!)
 for dll in CppSharp.CppParser.dll Std-symbols.dll; do
@@ -116,6 +123,22 @@ for dll in CppSharp.CppParser.dll Std-symbols.dll; do
         echo "FEHLER: $dll fehlt im lib/-Zweig"; FAIL=1
     fi
 done
+
+# 4) native-Zweig (runtimes/win-x64/native/) — Bestueckung plausibel?
+if unzip -l "$CPPS_NUPKG" | grep -q "runtimes/win-x64/native/CppSharp.CppParser.dll"; then
+    echo "OK: native-Zweig bestueckt"
+else
+    echo "HINWEIS: native-Zweig leer (nur kritisch, falls benoetigt)"
+fi
+
+# 5) Runtime-Paket separat pruefen (flaches lib/-Layout, TFM ist netstandard2.1!)
+if [ ! -f "$RUNTIME_NUPKG" ]; then
+    echo "FEHLER: $RUNTIME_NUPKG nicht erzeugt."; FAIL=1
+elif ! unzip -l "$RUNTIME_NUPKG" | grep -qE "lib/[^/]+/CppSharp\.Runtime\.dll"; then
+    echo "FEHLER: CppSharp.Runtime.dll fehlt im Runtime-Paket"; FAIL=1
+else
+    echo "OK: Runtime-Paket"
+fi
 
 if [ "$FAIL" -ne 0 ]; then
     echo ""

@@ -211,6 +211,7 @@ namespace CppSharp
             passes.AddPass(new FlattenAnonymousTypesToFields());
             passes.AddPass(new CheckIgnoredDeclsPass());
             passes.AddPass(new MarkUsedClassInternalsPass());
+            passes.AddPass(new FastDelegateToDelegatesPass());
 
             if (Options.IsCSharpGenerator)
             {
@@ -251,7 +252,6 @@ namespace CppSharp
             Generator.SetupPasses();
 
             passes.AddPass(new CleanInvalidDeclNamesPass());
-            passes.AddPass(new FastDelegateToDelegatesPass());
 
             if (Options.GeneratorKind != GeneratorKind.Emscripten)
             {

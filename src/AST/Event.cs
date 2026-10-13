@@ -1,4 +1,5 @@
 ﻿using System.Collections.Generic;
+using System.Text;
 
 namespace CppSharp.AST
 {
@@ -17,5 +18,21 @@ namespace CppSharp.AST
         public Declaration OriginalDeclaration { get; set; }
 
         public int GlobalId { get; set; }
+
+        public string GetNameForConnect()
+        {
+            var nameBuilder = new StringBuilder();
+            Declaration declarationContext = Namespace;
+            while (!(declarationContext is TranslationUnit))
+            {
+                nameBuilder.Insert(0, $"{declarationContext.OriginalName}_");
+                declarationContext = declarationContext.Namespace;
+            }
+            nameBuilder.Append(OriginalName);
+            for (int i = 0; i < nameBuilder.Length; i++)
+                if (!char.IsLetterOrDigit(nameBuilder[i]) && nameBuilder[i] != '_')
+                    nameBuilder[i] = '_';
+            return nameBuilder.ToString();
+        }
     }
 }

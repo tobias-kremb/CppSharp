@@ -841,6 +841,11 @@ internal static bool {Helpers.TryGetNativeToManagedMappingIdentifier}(IntPtr nat
             {
                 var field = fields[i];
 
+                var replacedByEvent = @class.Events.Any(e =>
+	                e.OriginalDeclaration is Field astField && astField.OriginalPtr == field.FieldPtr);
+				if (replacedByEvent)
+					continue;
+                
                 TypePrinterResult retType = TypePrinter.VisitFieldDecl(
                     new Field { Name = field.Name, QualifiedType = field.QualifiedType });
 
@@ -2101,7 +2106,8 @@ internal static bool {Helpers.TryGetNativeToManagedMappingIdentifier}(IntPtr nat
 
         #endregion
 
-        #region Events
+
+	    #region Events
 
         public override bool VisitEvent(Event @event)
         {
@@ -2116,20 +2122,39 @@ internal static bool {Helpers.TryGetNativeToManagedMappingIdentifier}(IntPtr nat
             var delegateInstance = Generator.GeneratedIdentifier(@event.OriginalName);
             var delegateName = delegateInstance + "Delegate";
             var delegateRaise = delegateInstance + "RaiseInstance";
+            var connectName = @event.GetNameForConnect();
+            var eventLock = delegateInstance + "Lock";
+
+            string libName = @event.Namespace.TranslationUnit.Module.SymbolsLibraryName;
+            if (Context.ParserOptions.TargetTriple.IsWindows() &&
+                libName.Contains('.') && Path.GetExtension(libName) != ".dll")
+                libName += ".dll";
 
             WriteLine("[UnmanagedFunctionPointer(__CallingConvention.Cdecl)]");
-            WriteLine("delegate void {0}({1});", delegateName, args);
+            WriteLine("{0}delegate void {1}({2});",
+                Helpers.GetAccess(@event.Access), delegateName, args);
             WriteLine("{0} {1};", delegateName, delegateRaise);
             NewLine();
 
-            WriteLine("{0} {1};", @event.Type, delegateInstance);
-            WriteLine("public event {0} {1}", @event.Type, @event.Name);
-            WriteOpenBraceAndIndent();
-
-            GenerateEventAdd(@event, delegateRaise, delegateName, delegateInstance);
+            WriteLine("[SuppressUnmanagedCodeSecurity, DllImport(\"{0}\", EntryPoint = \"{1}_Connect\", CallingConvention = __CallingConvention.Cdecl)]",
+                libName, connectName);
+            WriteLine("internal static extern void _{0}_Connect(global::System.IntPtr {1}, global::System.IntPtr {2});",
+                @event.Name, Helpers.InstanceIdentifier, Generator.GeneratedIdentifier("ptr"));
+            WriteLine("[SuppressUnmanagedCodeSecurity, DllImport(\"{0}\", EntryPoint = \"{1}_Disconnect\", CallingConvention = __CallingConvention.Cdecl)]",
+                libName, connectName);
+            WriteLine("internal static extern void _{0}_Disconnect(global::System.IntPtr {1});",
+                @event.Name, Helpers.InstanceIdentifier);
             NewLine();
 
-            GenerateEventRemove(@event, delegateInstance);
+            WriteLine("{0} {1};", delegateName, delegateInstance);
+            WriteLine("private readonly global::System.Object {0} = new global::System.Object();", eventLock);
+            WriteLine("public event {0} {1}", delegateName, @event.Name);
+            WriteOpenBraceAndIndent();
+
+            GenerateEventAdd(@event, delegateRaise, delegateName, delegateInstance, eventLock);
+            NewLine();
+
+            GenerateEventRemove(@event, delegateName, delegateInstance, delegateRaise, eventLock);
 
             UnindentAndWriteCloseBrace();
             NewLine();
@@ -2140,9 +2165,12 @@ internal static bool {Helpers.TryGetNativeToManagedMappingIdentifier}(IntPtr nat
             return true;
         }
 
-        private void GenerateEventAdd(Event @event, string delegateRaise, string delegateName, string delegateInstance)
+        private void GenerateEventAdd(Event @event, string delegateRaise, string delegateName, string delegateInstance, string eventLock)
         {
             WriteLine("add");
+            WriteOpenBraceAndIndent();
+
+            WriteLine("lock ({0})", eventLock);
             WriteOpenBraceAndIndent();
 
             WriteLine("if ({0} == null)", delegateRaise);
@@ -2150,29 +2178,42 @@ internal static bool {Helpers.TryGetNativeToManagedMappingIdentifier}(IntPtr nat
 
             WriteLine("{0} = new {1}(_{2}Raise);", delegateRaise, delegateName, @event.Name);
 
-            WriteLine("var {0} = Marshal.GetFunctionPointerForDelegate({1}).ToPointer();",
-                Generator.GeneratedIdentifier("ptr"), delegateInstance);
+            WriteLine("var {0} = Marshal.GetFunctionPointerForDelegate({1});",
+                Generator.GeneratedIdentifier("ptr"), delegateRaise);
 
-            // Call type map here.
-
-            //WriteLine("((::{0}*)NativePtr)->{1}.Connect(_fptr);", @class.QualifiedOriginalName,
-            //    @event.OriginalName);
+            WriteLine("_{0}_Connect({1}, {2});", @event.Name,
+                Helpers.InstanceIdentifier, Generator.GeneratedIdentifier("ptr"));
 
             UnindentAndWriteCloseBrace();
 
             WriteLine("{0} = ({1})System.Delegate.Combine({0}, value);",
-                delegateInstance, @event.Type);
+                delegateInstance, delegateName);
+
+            UnindentAndWriteCloseBrace();
 
             UnindentAndWriteCloseBrace();
         }
 
-        private void GenerateEventRemove(ITypedDecl @event, string delegateInstance)
+        private void GenerateEventRemove(Event @event, string delegateName, string delegateInstance, string delegateRaise, string eventLock)
         {
             WriteLine("remove");
             WriteOpenBraceAndIndent();
 
+            WriteLine("lock ({0})", eventLock);
+            WriteOpenBraceAndIndent();
+
             WriteLine("{0} = ({1})System.Delegate.Remove({0}, value);",
-                delegateInstance, @event.Type);
+                delegateInstance, delegateName);
+
+            WriteLine("if ({0} == null && {1} != null)", delegateInstance, delegateRaise);
+            WriteOpenBraceAndIndent();
+
+            WriteLine("_{0}_Disconnect({1});", @event.Name, Helpers.InstanceIdentifier);
+            WriteLine("{0} = null;", delegateRaise);
+
+            UnindentAndWriteCloseBrace();
+
+            UnindentAndWriteCloseBrace();
 
             UnindentAndWriteCloseBrace();
         }
@@ -2203,14 +2244,21 @@ internal static bool {Helpers.TryGetNativeToManagedMappingIdentifier}(IntPtr nat
 
             WriteLine("if ({0} != null)", delegateInstance);
             WriteOpenBraceAndIndent();
+            WriteLine("try");
+            WriteOpenBraceAndIndent();
             WriteLine("{0}({1});", delegateInstance, string.Join(", ", returns));
+            UnindentAndWriteCloseBrace();
+            WriteLine("catch (global::System.Exception)");
+            WriteOpenBraceAndIndent();
+            UnindentAndWriteCloseBrace();
             UnindentAndWriteCloseBrace();
 
             UnindentAndWriteCloseBrace();
         }
 
         #endregion
-
+        
+        
         #region Constructors
 
         public void GenerateClassConstructors(Class @class)
